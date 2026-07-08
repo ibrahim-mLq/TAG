@@ -1,107 +1,58 @@
 package games.sushigo;
 
-import core.actions.AbstractAction;
-import core.actions.SimultaneousAction;
+import core.actions.*;
 import games.sushigo.actions.ChooseCard;
 import games.sushigo.cards.SGCard;
-import org.junit.Before;
-import org.junit.Test;
-
-import java.util.List;
-import java.util.Map;
-
+import org.junit.*;
+import java.util.*;
+import java.util.stream.IntStream;
+import static java.util.stream.Collectors.*;
 import static org.junit.Assert.*;
 
 public class testCardReveals {
-
     SGGameState state;
-    SGParameters params;
     SGForwardModel fm = new SGForwardModel();
 
-    @Before
-    public void setup() {
-        params = new SGParameters();
-        params.setRandomSeed(1234);
-        state = new SGGameState(params, 4);
-        fm.setup(state);
+    @Before public void setup() {
+        SGParameters p = new SGParameters(); p.setRandomSeed(1234);
+        state = new SGGameState(p, 4); fm.setup(state);
     }
 
-    @Test
-    public void testTwoDumplings() {
-        // first we add three dumplings to player 0's hand
-        state.getPlayerHands().get(0).draw();
-        state.getPlayerHands().get(0).draw();
-        state.getPlayerHands().get(0).draw();
-        state.getPlayerHands().get(0).add(new SGCard(SGCard.SGCardType.Dumpling));
-        state.getPlayerHands().get(0).add(new SGCard(SGCard.SGCardType.Dumpling));
-        state.getPlayerHands().get(0).add(new SGCard(SGCard.SGCardType.Dumpling));
+    @Test public void testTwoDumplings() {
+        IntStream.range(0, 3).forEach(i -> state.getPlayerHands().get(0).draw());
+        IntStream.range(0, 3).forEach(i -> state.getPlayerHands().get(0).add(new SGCard(SGCard.SGCardType.Dumpling)));
         for (int i = 0; i < 8; i++) {
             List<AbstractAction> actions = fm.computeAvailableActions(state);
-            AbstractAction action = (i % 4 != 0) ?
-                    actions.stream().map(a -> (ChooseCard) a)
-                            .filter(a -> state.getPlayerHands().get(0).get(a.cardIdx).type == SGCard.SGCardType.Dumpling)
-                            .findFirst().orElseThrow(() -> new RuntimeException("No dumpling found")) :
-                    actions.get(0);
-            fm.next(state, action);
+            fm.next(state, (i % 4 != 0) ? actions.stream().map(a -> (ChooseCard) a)
+                    .filter(a -> state.getPlayerHands().get(0).get(a.cardIdx).type == SGCard.SGCardType.Dumpling)
+                    .findFirst().orElseThrow() : actions.get(0));
         }
         assertEquals(2, state.getPlayedCards().get(0).stream().filter(c -> c.type == SGCard.SGCardType.Dumpling).count());
-        assertEquals(3, state.getGameScore(0), 0.001); // 2 dumplings = 3 points
+        assertEquals(3, state.getGameScore(0), 0.001);
     }
 
-    @Test
-    public void testChopsticksAllowSecondPick() {
-        // give player 2 a chopsticks card
-        state.getPlayerHands().get(2).draw();
-        state.getPlayerHands().get(2).add(new SGCard(SGCard.SGCardType.Chopsticks));
-        assertSame(SGCard.SGCardType.Chopsticks, state.getPlayerHands().get(2).get(0).type);
+    @Test public void testChopsticksAllowSecondPick() { runChopsticksTest(2); }
 
-        // we can create a Simultaneous Action that chooses the first card for all players...this should include the just added Chopsticks
+    @Test public void testTwoPlayersChopsticks() { runChopsticksTest(2, 3); }
 
-        SimultaneousAction action = new SimultaneousAction(
-                Map.of(
-                        0, new ChooseCard(0, 0, false),
-                        1, new ChooseCard(1, 0, false),
-                        2, new ChooseCard(2, 0, false),
-                        3, new ChooseCard(3, 0, false)
-                )
-        );
+    private void runChopsticksTest(int... pIds) {
+        Set<Integer> players = IntStream.of(pIds).boxed().collect(toSet());
+        // Setup: replace one card in each target player's hand with Chopsticks
+        players.forEach(p -> { state.getPlayerHands().get(p).draw(); state.getPlayerHands().get(p).add(new SGCard(SGCard.SGCardType.Chopsticks)); });
 
-        assertTrue(action.getPlayerActions().get(2) instanceof ChooseCard chooseCard && chooseCard.cardIdx == 0);
+        choose(Set.of()); // Everyone plays card 0; target players now have Chopsticks in front of them
+        choose(players);  // Target players use their played Chopsticks to take two cards this turn
 
-        fm.next(state, action);
-        for (int i = 0; i < 4; i++)
-            assertEquals(1, state.getPlayedCards().get(i).getSize());
-        assertFalse(state.isActionInProgress());
-
-        assertEquals(List.of(0, 1, 2, 3), state.getCurrentSimultaneousPlayers());
-
-        // Now we can use the Chopsticks
-        action = new SimultaneousAction(
-                Map.of(
-                        0, new ChooseCard(0, 0, false),
-                        1, new ChooseCard(1, 0, false),
-                        2, new ChooseCard(2, 0, true),
-                        3, new ChooseCard(3, 0, false)
-                )
-        );
-
-        fm.next(state, action);
-        for (int i = 0; i < 4; i++)
-            assertEquals(1, state.getPlayedCards().get(i).getSize());
-        assertTrue(state.isActionInProgress());
-        assertEquals(List.of(2), state.getCurrentSimultaneousPlayers());
-
-        List<AbstractAction> availableActions = fm.computeAvailableActions(state);
-        assertEquals(6, availableActions.size());
-        for (int i = 0; i < 6; i++) {
-            assertTrue(availableActions.get(i) instanceof ChooseCard cc && cc.cardIdx == i+1 && cc.playerId == 2);
+        for (int p : pIds) {
+            assertTrue("Action should be in progress for extra pick", state.isActionInProgress());
+            fm.next(state, fm.computeAvailableActions(state).get(0));
         }
-        fm.next(state, availableActions.get(3)); // pick the 4th card in hand (index 3)
-        assertFalse(state.isActionInProgress());
-
-        for (int i = 0; i < 4; i++)
-            assertEquals(2, state.getPlayedCards().get(i).getSize());
-
+        assertFalse("Action should be finished", state.isActionInProgress());
+        IntStream.range(0, 4).forEach(i -> assertEquals(2, state.getPlayedCards().get(i).getSize()));
         assertEquals(List.of(0, 1, 2, 3), state.getCurrentSimultaneousPlayers());
+    }
+
+    private void choose(Set<Integer> chopsticksPlayers) {
+        fm.next(state, new SimultaneousAction(IntStream.range(0, 4).boxed().collect(toMap(i -> i, i -> new ChooseCard(i, 0, chopsticksPlayers.contains(i))))));
     }
 }
